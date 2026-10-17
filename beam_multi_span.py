@@ -376,7 +376,8 @@ class SlabPanel:
     arrow_flip: bool = False            # cantilever, arrow parallel to edge: sketch direction only
     rib_lx_m: float = 0.525             # ribbed, ribs parallel to the beam: load width lx (m)
     partition_floor_ht_m: float = 0.0   # floor height used to derive partition_ht_m
-    partition_depth_m: float = 0.0      # slab depth deducted from the floor height
+    partition_depth_m: float = 0.0      # depth of whatever is above the partition, deducted from floor height
+    partition_above: str = "Slab"       # "Beam" | "Slab" | "Opening"
     finishes_label: str = ""            # e.g. "Residential Areas (Screed and Tiles)" — shown in the PDF
     live_label: str = ""                # e.g. "Offices & Bed Areas" — shown in the PDF
 
@@ -491,7 +492,7 @@ class SlabPanel:
 # ============================================================
 # Panel sketch (shared by the Streamlit app and the PDF report)
 # ============================================================
-def draw_panel_sketch_ax(ax, panel):
+def draw_panel_sketch_ax(ax, panel, units="m"):
     """Draws a panel sketch on `ax`.
     Solid: thick navy edge + hatch ticks = continuous, thin dashed grey = discontinuous.
     Orange line just INSIDE an edge = the beam (reference edge) — it sits inside the panel
@@ -539,15 +540,16 @@ def draw_panel_sketch_ax(ax, panel):
 
     ly_e = panel.ly_edges()
     top_dim, side_dim = (panel.ly_m, panel.lx_m) if "top" in ly_e else (panel.lx_m, panel.ly_m)
-    ax.text(0.5, 1.13, sub(f"{'ly' if 'top' in ly_e else 'lx'} = {top_dim:g} m"), ha='center', va='bottom', fontsize=8)
-    ax.text(1.13, 0.5, sub(f"{'ly' if 'left' in ly_e else 'lx'} = {side_dim:g} m"), ha='left', va='center',
+    fmt = (lambda v: f"{round(v * 1000)} mm") if units == "mm" else (lambda v: f"{v:.3f} m")
+    ax.text(0.5, 1.13, sub(f"{'ly' if 'top' in ly_e else 'lx'} = {fmt(top_dim)}"), ha='center', va='bottom', fontsize=8)
+    ax.text(1.13, 0.5, sub(f"{'ly' if 'left' in ly_e else 'lx'} = {fmt(side_dim)}"), ha='left', va='center',
             fontsize=8, rotation=90)
     ax.text(0.5, -0.1, f"Panel {panel.panel_id}", ha='center', va='top', fontsize=8.5, fontweight='bold')
 
 
-def panel_sketch_figure(panel):
+def panel_sketch_figure(panel, units="m"):
     fig, ax = plt.subplots(figsize=(3.4, 3.4))
-    draw_panel_sketch_ax(ax, panel)
+    draw_panel_sketch_ax(ax, panel, units)
     return fig
 
 
@@ -558,11 +560,12 @@ def panel_sketch_figure(panel):
 class WallLoad:
     thickness_m: float = 0.2
     floor_height_m: float = 3.6     # floor-to-floor height
-    depth_m: float = 0.45           # depth of the supporting beam (wall sits on it)
+    depth_m: float = 0.45           # depth of whatever is above the wall (deducted from the floor height)
+    above: str = "Beam"             # "Beam" | "Slab" | "Opening"
 
     @property
     def height_m(self) -> float:
-        """Wall height = floor height - beam depth."""
+        """Wall height = floor height - depth of the beam / slab / opening above it."""
         return max(0.0, self.floor_height_m - self.depth_m)
 
     def factored_dead_kNm(self, dc: DesignCriteria) -> float:
@@ -788,7 +791,7 @@ class BeamSystem:
             out.append(f"  UDL (total)  : Gk = {s.udl_dead:.3f} kN/m   Qk = {s.udl_live:.3f} kN/m")
             for p in s.point_loads:
                 out.append(f"  {p.label:<10}  : Gk = {p.total_dead_kN:.2f} kN   Qk = {p.live_kN:.2f} kN"
-                            f"   @ {p.position_m:.2f} m from {labels[i]}")
+                            f"   @ {p.position_m:.3f} m from {labels[i]}")
             out.append(f"  Reaction {labels[i]:<3}  : Gk = {RL['dead']:.3f} kN   Qk = {RL['live']:.3f} kN")
             out.append(f"  Reaction {labels[i+1]:<3}  : Gk = {RR['dead']:.3f} kN   Qk = {RR['live']:.3f} kN")
 
@@ -949,12 +952,12 @@ class BeamSystem:
                              [round(cum[i] + p.position_m, 6) for i, s in enumerate(self.spans)
                               for p in s.point_loads]))
             for a, b in zip(pts[:-1], pts[1:]):
-                dim_line(a, b, d["y_dim1"], f"{(b - a):.2f} m")
+                dim_line(a, b, d["y_dim1"], f"{(b - a):.3f} m")
             for i, s in enumerate(self.spans):
-                dim_line(cum[i], cum[i + 1], d["y_dim2"], f"Span {i+1} = {s.length_m:.2f} m", color='#1F4E78')
+                dim_line(cum[i], cum[i + 1], d["y_dim2"], f"Span {i+1} = {s.length_m:.3f} m", color='#1F4E78')
         else:
             for i, s in enumerate(self.spans):
-                dim_line(cum[i], cum[i + 1], d["y_dim1"], f"Span {i+1} = {s.length_m:.2f} m", color='#1F4E78')
+                dim_line(cum[i], cum[i + 1], d["y_dim1"], f"Span {i+1} = {s.length_m:.3f} m", color='#1F4E78')
 
         if title:
             ax.text(Ltot / 2, d["above"] - 0.22, "Beam — Load & Reaction Diagram", ha='center', va='center',
@@ -1334,14 +1337,14 @@ class BeamSystem:
                              [round(cum[i] + pl.position_m, 6) for i, sp in enumerate(self.spans)
                               for pl in sp.point_loads]))
             for a_, b_ in zip(pts[:-1], pts[1:]):
-                dim(xo(a_), xo(b_), y1, f"{b_ - a_:.2f} m", '#333333')
+                dim(xo(a_), xo(b_), y1, f"{b_ - a_:.3f} m", '#333333')
             y2 = y1 - 0.028
         else:          # no point loads: a single dimension line for the spans
             y2 = y1
         for i, sp in enumerate(self.spans):
-            narrow = (xo(cum[i + 1]) - xo(cum[i])) < 0.13
+            narrow = (xo(cum[i + 1]) - xo(cum[i])) < 0.16
             dim(xo(cum[i]), xo(cum[i + 1]), y2,
-                (f"S{i+1} = {sp.length_m:.2f} m" if narrow else f"Span {i+1} = {sp.length_m:.2f} m"), BLUE)
+                (f"S{i+1} = {sp.length_m:.3f} m" if narrow else f"Span {i+1} = {sp.length_m:.3f} m"), BLUE)
         st["y"] = y2 - 0.035
 
         # ================= DESIGN CRITERIA (first) =================
@@ -1385,15 +1388,16 @@ class BeamSystem:
             line("Dead loads, Gk:", bold=True, ref="BS 6399-1:1996\nTable 1",
                  out=("Panel" + ("s " if len(ids) > 1 else " ") + ", ".join(str(i) for i in ids)
                       + f":\nnGk = {G:.2f} kN/m²\nnQk = {Q:.2f} kN/m²"))
-            line(f"Self weight = {pn.thickness_mm/1000:g} × {dc.concrete_density:g} = {sw:.2f} kN/m²", indent=0.06)
+            line(f"Self weight = {pn.thickness_mm/1000:.3f} × {dc.concrete_density:g} = {sw:.2f} kN/m²", indent=0.06)
             line(f"Finishes = {pn.finishes_kNm2:g} kN/m²{type_txt(pn.finishes_label, pn.finishes_kNm2, FINISHES_OPTIONS)}",
                  indent=0.06)
             if pn.has_partition:
                 if pn.partition_floor_ht_m > 0:
-                    line(f"Partition wall height = floor height − slab depth = {pn.partition_floor_ht_m:g} − "
-                         f"{pn.partition_depth_m:g} = {pn.partition_ht_m:.2f} m", indent=0.06)
-                line(f"Partitions = ({pn.partition_len_m:g} × {pn.partition_thk_m:g} × {pn.partition_ht_m:g}"
-                     f" × {dc.wall_density:g}) / ({pn.ly_m:g} × {pn.lx_m:g}) = {part:.2f} kN/m²", indent=0.06)
+                    line(f"Partition wall height = floor height − {pn.partition_above.lower()} depth = "
+                         f"{pn.partition_floor_ht_m:.3f} − {pn.partition_depth_m:.3f} = {pn.partition_ht_m:.3f} m",
+                         indent=0.06)
+                line(f"Partitions = ({pn.partition_len_m:.3f} × {pn.partition_thk_m:.3f} × {pn.partition_ht_m:.3f}"
+                     f" × {dc.wall_density:g}) / ({pn.ly_m:.3f} × {pn.lx_m:.3f}) = {part:.2f} kN/m²", indent=0.06)
             else:
                 line("Partitions = 0 kN/m²", indent=0.06)
             line(f"Live loads, Qk = {pn.live_kNm2:g} kN/m²{type_txt(pn.live_label, pn.live_kNm2, LIVE_LOAD_OPTIONS)}",
@@ -1409,12 +1413,12 @@ class BeamSystem:
         if any_wall:
             heading("Wall loading:")
             wl = self.wall
-            line(f"Floor height = {wl.floor_height_m:g} m,   beam depth = {wl.depth_m:g} m", indent=0.06,
+            line(f"Floor height = {wl.floor_height_m:.3f} m,   {wl.above.lower()} depth = {wl.depth_m:.3f} m", indent=0.06,
                  ref="BS 6399-1:1996\nTable 1")
-            line(f"Wall height = floor height − beam depth = {wl.floor_height_m:g} − {wl.depth_m:g} = "
-                 f"{wl.height_m:.2f} m", indent=0.06)
-            line(f"Thickness = {wl.thickness_m:g} m,   γ = {dc.wall_density:g} kN/m³", indent=0.06)
-            line(f"nGk = {dc.factor_selfweight_partition:g} × {wl.thickness_m:g} × {wl.height_m:.2f} × "
+            line(f"Wall height = floor height − {wl.above.lower()} depth = {wl.floor_height_m:.3f} − "
+                 f"{wl.depth_m:.3f} = {wl.height_m:.3f} m", indent=0.06)
+            line(f"Thickness = {wl.thickness_m:.3f} m,   γ = {dc.wall_density:g} kN/m³", indent=0.06)
+            line(f"nGk = {dc.factor_selfweight_partition:g} × {wl.thickness_m:.3f} × {wl.height_m:.3f} × "
                  f"{dc.wall_density:g} = {wl.factored_dead_kNm(dc):.2f} kN/m", indent=0.06,
                  out=f"Wall loading:\nnGk = {wl.factored_dead_kNm(dc):.2f} kN/m")
             gap(0.7)
@@ -1469,7 +1473,7 @@ class BeamSystem:
             for pl in s.point_loads:
                 if pl.self_weight_kN:
                     line(f"Point load {pl.label}: self-weight of element = {pl.sw_factor:g} × "
-                         f"{pl.elem_b_m:g} × {pl.elem_h_m:g} × {pl.elem_len_m:g} × {pl.density_kNm3:g} "
+                         f"{pl.elem_b_m:.3f} × {pl.elem_h_m:.3f} × {pl.elem_len_m:.3f} × {pl.density_kNm3:g} "
                          f"= {pl.self_weight_kN:.2f} kN")
                     line(f"nGk = {pl.dead_kN:.2f} + {pl.self_weight_kN:.2f} = {pl.total_dead_kN:.2f} kN",
                          indent=0.06)

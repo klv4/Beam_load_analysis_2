@@ -47,6 +47,22 @@ def ask_int(prompt, default=None):
             print("  Please enter a whole number.")
 
 
+def ask_mm(prompt, default=None):
+    """Ask for a distance in whole millimetres; returns metres (the engine works in metres)."""
+    d = None if default is None else int(round(default * 1000))
+    return ask_int(f"{prompt} (mm)", default=d) / 1000.0
+
+
+def ask_above(prompt, default="Beam"):
+    while True:
+        raw = input(f"{prompt} (Beam/Slab/Opening) [{default}]: ").strip().title()
+        if raw == "":
+            return default
+        if raw in ("Beam", "Slab", "Opening"):
+            return raw
+        print("  Please enter Beam, Slab or Opening.")
+
+
 def ask_yesno(prompt, default="n"):
     raw = input(f"{prompt} (y/n) [{default}]: ").strip().lower()
     if raw == "":
@@ -116,7 +132,7 @@ def run_wizard():
     # ---------------- STEP 2: spans, lengths, end conditions ----------------
     print("\nSTEP 2 — Span configuration")
     n_spans = ask_int("Number of spans", default=1)
-    span_lengths = [ask_float(f"  Span {i+1} length (m)") for i in range(n_spans)]
+    span_lengths = [ask_mm(f"  Span {i+1} length") for i in range(n_spans)]
 
     print("\nEnd support conditions (interior/shared supports are always Pin & continuous)")
     start_cond = ask_condition("  Condition at the FIRST support (start of Span 1)")
@@ -136,12 +152,12 @@ def run_wizard():
                 used_names.add(name)
                 break
             print(f"  '{name}' is already used for another panel — choose a different name.")
-        thickness = ask_float("    Thickness (mm)", default=150)
-        ly = ask_float("    ly — long dimension (m)", default=5)
-        lx = ask_float("    lx — short dimension / load width feeding the beam (m)", default=2)
+        thickness = ask_int("    Thickness (mm)", default=150)
+        ly = ask_mm("    ly — long dimension", default=5)
+        lx = ask_mm("    lx — short dimension / load width feeding the beam", default=2)
         if lx > ly:
             ly, lx = lx, ly
-            print(f"    (ly must be the longer dimension — swapped: ly={ly} m, lx={lx} m)")
+            print(f"    (ly must be the longer dimension — swapped: ly={ly*1000:.0f} mm, lx={lx*1000:.0f} mm)")
         ratio = ly / lx if lx > 0 else float("inf")
         spanning = "Two-way" if ratio <= 2.0 else "One-way"
         print(f"    ly/lx = {ratio:.2f}  ->  {'<= 2.0' if spanning=='Two-way' else '> 2.0'}"
@@ -152,13 +168,15 @@ def run_wizard():
         live_label, live = ask_choice("    Live load:", LIVE_LOAD_OPTIONS, default_key="2")
         has_partition = ask_yesno("    Partition wall on this panel?", "n")
         plen = pthk = pht = pfl = pdp = 0.0
+        pab = "Slab"
         if has_partition:
-            plen = ask_float("      Partition length (m)")
-            pthk = ask_float("      Partition thickness (m)", default=0.2)
-            pfl = ask_float("      Floor height (m)", default=3.6)
-            pdp = ask_float("      Slab depth (m)", default=thickness / 1000.0)
+            plen = ask_mm("      Partition length")
+            pthk = ask_mm("      Partition thickness", default=0.2)
+            pfl = ask_mm("      Floor height", default=3.6)
+            pab = ask_above("      What is above the partition?", default="Slab")
+            pdp = ask_mm(f"      {pab} depth", default=thickness / 1000.0)
             pht = max(0.0, pfl - pdp)
-            print(f"      Partition height = floor height - slab depth = {pfl:g} - {pdp:g} = {pht:.2f} m")
+            print(f"      Partition height = floor height - {pab.lower()} depth = {pfl*1000:.0f} - {pdp*1000:.0f} = {pht*1000:.0f} mm")
 
         print("    Panel type:")
         print("      1. Solid slab (uses BS 8110-1:1997 Table 3.15 — two-way as normal,")
@@ -181,8 +199,8 @@ def run_wizard():
             if primary_edge in ("top", "bottom", "left", "right"):
                 break
             print("      Please enter one of: top, bottom, left, right")
-        primary_edge_is_ly = ask_yesno(f"      Is the '{primary_edge}' edge the ly (long, {ly} m) side?"
-                                        f" ('n' means it's the lx ({lx} m) side)", "n")
+        primary_edge_is_ly = ask_yesno(f"      Is the '{primary_edge}' edge the ly (long, {ly*1000:.0f} mm) side?"
+                                        f" ('n' means it's the lx ({lx*1000:.0f} mm) side)", "n")
 
         opposite = {"top": "bottom", "bottom": "top", "left": "right", "right": "left"}[primary_edge]
         ly_pair = {primary_edge, opposite} if primary_edge_is_ly else \
@@ -195,20 +213,20 @@ def run_wizard():
                 f"      Does the direction the {what} run PERPENDICULAR to the '{primary_edge}' reference edge?", "y")
             if not arrow_perpendicular:
                 if slab_type == "ribbed":
-                    rib_lx = ask_float("      lx — rib load width (m)", default=0.525)
+                    rib_lx = ask_mm("      lx — rib load width", default=0.525)
                 else:
                     arrow_flip = ask_yesno("      Flip the arrow direction (sketch only — no effect on load)?", "n")
 
         if slab_type == "solid":
             print(f"\n    Mark each edge of panel '{name}' as CONTINUOUS (built in / carries over an "
                   f"adjacent support) or DISCONTINUOUS (simply supported / a free edge).")
-            print(f"      ly = {ly} m  -> {' and '.join(sorted(ly_pair))} edge(s)")
-            print(f"      lx = {lx} m  -> {' and '.join(sorted({'top','bottom','left','right'} - ly_pair))} edge(s)")
+            print(f"      ly = {ly*1000:.0f} mm  -> {' and '.join(sorted(ly_pair))} edge(s)")
+            print(f"      lx = {lx*1000:.0f} mm  -> {' and '.join(sorted({'top','bottom','left','right'} - ly_pair))} edge(s)")
             for edge_key in ("top", "bottom", "left", "right"):
                 dim_label = "ly" if edge_key in ly_pair else "lx"
                 dim_value = ly if dim_label == "ly" else lx
                 edge_continuous[edge_key] = ask_yesno(
-                    f"      {edge_key.upper():<6} ({dim_label} edge, length = {dim_value} m) continuous?", "y")
+                    f"      {edge_key.upper():<6} ({dim_label} edge, length = {dim_value*1000:.0f} mm) continuous?", "y")
 
             # oriented sketch: draw ly on whichever pair the user actually specified
             def mark(v):
@@ -229,7 +247,7 @@ def run_wizard():
                                   has_partition, plen, pthk, pht, slab_type, edge_continuous,
                                   primary_edge, primary_edge_is_ly,
                                   arrow_perpendicular=arrow_perpendicular, arrow_flip=arrow_flip,
-                                  rib_lx_m=rib_lx, partition_floor_ht_m=pfl, partition_depth_m=pdp,
+                                  rib_lx_m=rib_lx, partition_floor_ht_m=pfl, partition_depth_m=pdp, partition_above=pab,
                                   finishes_label=finishes_label, live_label=live_label)
         if slab_type != "solid":
             pn = panels[name]
@@ -245,11 +263,12 @@ def run_wizard():
     print("\nSTEP 5 — Wall loading")
     wall_defined = ask_yesno("Is there direct wall loading on the beam anywhere?", "n")
     if wall_defined:
-        wt = ask_float("  Wall thickness (m)", default=0.2)
-        wfl = ask_float("  Floor height (m)", default=3.6)
-        wdp = ask_float("  Beam depth (m)", default=0.45)
-        wall = WallLoad(wt, wfl, wdp)
-        print(f"  Wall height = floor height - beam depth = {wfl:g} - {wdp:g} = {wall.height_m:.2f} m")
+        wt = ask_mm("  Wall thickness", default=0.2)
+        wfl = ask_mm("  Floor height", default=3.6)
+        wab = ask_above("  What is above the wall?", default="Beam")
+        wdp = ask_mm(f"  {wab} depth", default=0.45)
+        wall = WallLoad(wt, wfl, wdp, wab)
+        print(f"  Wall height = floor height - {wab.lower()} depth = {wfl*1000:.0f} - {wdp*1000:.0f} = {wall.height_m*1000:.0f} mm")
         print(f"  Factored wall dead load = {wall.factored_dead_kNm(dc):.3f} kN/m (applied where present)")
     else:
         wall = WallLoad(0, 0)
@@ -262,7 +281,7 @@ def run_wizard():
 
     # ---------------- STEP 7/8: build each span ----------------
     for i in range(n_spans):
-        print(f"\n--- Span {i+1} (length {span_lengths[i]} m) ---")
+        print(f"\n--- Span {i+1} (length {span_lengths[i]*1000:.0f} mm) ---")
 
         print("STEP 6 — Load distribution: which panels touch this span?")
         print(f"  Available panels: {', '.join(panels.keys())}")
@@ -292,12 +311,12 @@ def run_wizard():
             label = ask_str(f"    Point load {j+1} label", default=f"P{j+1}")
             d = ask_float(f"    {label}: dead load Ngk (kN)", default=0)
             l = ask_float(f"    {label}: live load Nqk (kN)", default=0)
-            x = ask_float(f"    {label}: position from left support (m)", default=0)
+            x = ask_mm(f"    {label}: position from left support", default=0)
             eb = eh = el = 0.0
             if ask_yesno(f"    Add self-weight of the element (beam/column) to {label}?", "n"):
                 eb = ask_float("      Element width b (mm)", default=200) / 1000.0
                 eh = ask_float("      Element depth h (mm)", default=450) / 1000.0
-                el = ask_float("      Element length (m)", default=3)
+                el = ask_mm("      Element length", default=3)
             pl = PointLoad(label, d, l, x, eb, eh, el, dc.concrete_density, dc.factor_selfweight_partition)
             if pl.self_weight_kN:
                 print(f"      Self-weight = {dc.factor_selfweight_partition:g} x {eb:g} x {eh:g} x {el:g} x "

@@ -55,6 +55,7 @@ def _collect_values():
         if k in st.session_state:
             v = st.session_state[k]
             out[k] = v.isoformat() if isinstance(v, datetime.date) else v
+    out["_v"] = 2            # version 2: distance inputs are whole millimetres
     return out
 
 
@@ -77,9 +78,14 @@ def _detect_base_url():
 _tok = st.query_params.get("p")
 if _tok and st.session_state.get("_p_used") != _tok:
     try:
-        st.session_state["_loaded"] = decode_project_state(_tok)
+        _state = decode_project_state(_tok)
         st.session_state["_p_used"] = _tok
         st.query_params.clear()
+        if _state.get("_v") == 2:
+            st.session_state["_loaded"] = _state
+        else:
+            st.warning("This project link was saved by an older version of the app (distances were in metres), "
+                       "so it cannot be reopened. Please enter the project again and save a new link.")
     except Exception:
         st.error("This project link could not be read — it may be incomplete or damaged.")
 
@@ -121,7 +127,7 @@ for row_start in range(0, int(n_spans), ROW_SIZE):
     cols = st.columns(len(row_indices))
     for col, i in zip(cols, row_indices):
         with col:
-            lengths.append(W(st, "number_input", f"Span {i+1} length (m)", min_value=0.1, value=3.0 + i, step=0.1, key=f"L{i}"))
+            lengths.append(W(st, "number_input", f"Span {i+1} length (mm)", min_value=100, value=3000 + 1000 * i, step=1, key=f"L{i}") / 1000.0)
 
 c1, c2 = st.columns(2)
 start_cond = W(c1, "selectbox", "Condition at FIRST support (start of Span 1)", ["Pin", "Cantilever"], key="start_cond")
@@ -147,11 +153,11 @@ for i in range(1, int(n_panels) + 1):
     with st.expander(f"Panel: {name}", expanded=(i <= 2)):
         c1, c2, c3 = st.columns(3)
         t = W(c1, "number_input", "Thickness (mm)", value=200, key=f"pt{i}")
-        ly = W(c2, "number_input", "ly — long dimension (m)", value=5.0, key=f"ply{i}")
-        lx = W(c3, "number_input", "lx — short dimension (m)", value=2.0, key=f"plx{i}")
+        ly = W(c2, "number_input", "ly — long dimension (mm)", value=5000, step=1, key=f"ply{i}") / 1000.0
+        lx = W(c3, "number_input", "lx — short dimension (mm)", value=2000, step=1, key=f"plx{i}") / 1000.0
         if lx > ly:
             ly, lx = lx, ly
-            st.info(f"ly must be the longer dimension — swapped automatically: ly={ly:g} m, lx={lx:g} m")
+            st.info(f"ly must be the longer dimension — swapped automatically: ly={ly*1000:.0f} mm, lx={lx*1000:.0f} mm")
         ratio = ly / lx if lx > 0 else float("inf")
         spanning = "Two-way" if ratio <= 2.0 else "One-way"
         st.caption(f"ly/lx = {ratio:.2f}  ->  {'\u2264 2.0' if spanning=='Two-way' else '> 2.0'}  ->  "
@@ -163,16 +169,19 @@ for i in range(1, int(n_panels) + 1):
                                  format_func=lambda k: live_labels[k], key=f"pliv{i}")
         has_partition = W(st, "checkbox", "Partition wall on this panel?", key=f"ppart{i}")
         plen = pthk = pht = pfl = pdp = 0.0
+        pab = "Slab"
         if has_partition:
             c6, c7 = st.columns(2)
-            plen = W(c6, "number_input", "Partition length (m)", value=5.0, key=f"pplen{i}")
-            pthk = W(c7, "number_input", "Partition thickness (m)", value=0.2, key=f"ppthk{i}")
-            c8, c9 = st.columns(2)
-            pfl = W(c8, "number_input", "Floor height (m)", value=3.6, step=0.1, key=f"ppfl{i}")
-            pdp = W(c9, "number_input", "Slab depth (m)", value=round(t / 1000.0, 3), step=0.05,
-                                  format="%.3f", key=f"ppdp{i}_{t}")
+            plen = W(c6, "number_input", "Partition length (mm)", value=5000, step=1, key=f"pplen{i}") / 1000.0
+            pthk = W(c7, "number_input", "Partition thickness (mm)", value=200, step=1, key=f"ppthk{i}") / 1000.0
+            c8, c9, c10 = st.columns(3)
+            pfl = W(c8, "number_input", "Floor height (mm)", value=3600, step=1, key=f"ppfl{i}") / 1000.0
+            pab = W(c9, "selectbox", "Above the partition", options=["Beam", "Slab", "Opening"], index=1,
+                    key=f"ppab{i}")
+            pdp = W(c10, "number_input", "Depth (mm)", value=int(t), step=1, key=f"ppdp{i}_{t}") / 1000.0
             pht = max(0.0, pfl - pdp)
-            st.caption(f"Partition height = floor height − slab depth = {pfl:g} − {pdp:g} = **{pht:.2f} m**")
+            st.caption(f"Partition height = floor height − {pab.lower()} depth = "
+                       f"{pfl*1000:.0f} − {pdp*1000:.0f} = **{pht*1000:.0f} mm**")
 
         st.markdown("**Distribution factor** (auto — BS 8110-1:1997 Table 3.15 for solid slabs)")
         type_opts = {"Solid slab (Table 3.15 — one-way uses beta_vx at ly/lx = 2.0)": "solid",
@@ -187,7 +196,7 @@ for i in range(1, int(n_panels) + 1):
         oc1, oc2 = st.columns(2)
         primary_edge = W(oc1, "selectbox", "Reference edge", ["top", "bottom", "left", "right"],
                                       index=2, key=f"pref{i}")
-        primary_edge_is_ly = W(oc2, "checkbox", f"'{primary_edge}' edge is the ly ({ly:g} m) side",
+        primary_edge_is_ly = W(oc2, "checkbox", f"'{primary_edge}' edge is the ly ({ly*1000:.0f} mm) side",
                                            value=False, key=f"prefly{i}")
         opposite = {"top": "bottom", "bottom": "top", "left": "right", "right": "left"}[primary_edge]
         pair = {primary_edge, opposite}
@@ -205,8 +214,8 @@ for i in range(1, int(n_panels) + 1):
             arrow_perpendicular = rel.startswith("Perpendicular")
             if not arrow_perpendicular:
                 if slab_type == "ribbed":
-                    rib_lx = W(st, "number_input", "lx — rib load width (m)", value=0.525, step=0.005,
-                                              format="%.3f", key=f"prib{i}")
+                    rib_lx = W(st, "number_input", "lx — rib load width (mm)", value=525, step=1,
+                                              key=f"prib{i}") / 1000.0
                 else:
                     arrow_flip = W(st, "checkbox", "Flip arrow direction (sketch only — no effect on load)",
                                               key=f"pflip{i}")
@@ -214,7 +223,7 @@ for i in range(1, int(n_panels) + 1):
         panel_obj = SlabPanel(name, t, ly, lx, FINISHES_OPTIONS[fin_key][1], LIVE_LOAD_OPTIONS[live_key][1],
                               has_partition, plen, pthk, pht, slab_type, edge_continuous,
                               primary_edge, primary_edge_is_ly,
-                              partition_floor_ht_m=pfl, partition_depth_m=pdp,
+                              partition_floor_ht_m=pfl, partition_depth_m=pdp, partition_above=pab,
                               arrow_perpendicular=arrow_perpendicular, arrow_flip=arrow_flip,
                               rib_lx_m=rib_lx,
                               finishes_label=FINISHES_OPTIONS[fin_key][0],
@@ -227,16 +236,16 @@ for i in range(1, int(n_panels) + 1):
                     dim = "ly" if edge_key in ly_edges else "lx"
                     dim_val = ly if dim == "ly" else lx
                     edge_continuous[edge_key] = W(st, "checkbox", 
-                        f"{edge_key.capitalize()} continuous ({dim} edge, {dim_val:g} m)",
+                        f"{edge_key.capitalize()} continuous ({dim} edge, {dim_val*1000:.0f} mm)",
                         value=True, key=f"e{edge_key}{i}")
             with ec2:
-                st.pyplot(panel_sketch_figure(panel_obj), width='content')
+                st.pyplot(panel_sketch_figure(panel_obj, units="mm"), width='content')
             st.caption(f"BS 8110 panel type: **{bs8110_classify_panel(edge_continuous, list(ly_edges), list(lx_edges))}**"
                        + (f"  — *one-way: beta_vx taken at ly/lx = 2.0*" if spanning == "One-way" else ""))
         else:
             sk1, sk2 = st.columns([1, 1])
             with sk2:
-                st.pyplot(panel_sketch_figure(panel_obj), width='content')
+                st.pyplot(panel_sketch_figure(panel_obj, units="mm"), width='content')
             with sk1:
                 f_ = panel_obj.distribution_factor(primary_edge)
                 st.markdown(f"Factor = **{f_:.2f}**  \nLoad width lx = **{panel_obj.load_width_m():.3f} m**")
@@ -256,12 +265,14 @@ for i in range(1, int(n_panels) + 1):
 st.header("4. Wall loading")
 wall_defined = W(st, "checkbox", "Is there direct wall loading on the beam anywhere?", key="wall_defined")
 if wall_defined:
-    c1, c2, c3 = st.columns(3)
-    wt = W(c1, "number_input", "Wall thickness (m)", value=0.2, step=0.05, key="wall_t")
-    wfl = W(c2, "number_input", "Floor height (m)", value=3.6, step=0.1, key="wall_fl")
-    wdp = W(c3, "number_input", "Beam depth (m)", value=0.45, step=0.05, key="wall_dp")
-    wall = WallLoad(wt, wfl, wdp)
-    st.caption(f"Wall height = floor height − beam depth = {wfl:g} − {wdp:g} = **{wall.height_m:.2f} m**")
+    c1, c2, c3, c4 = st.columns(4)
+    wt = W(c1, "number_input", "Wall thickness (mm)", value=200, step=1, key="wall_t") / 1000.0
+    wfl = W(c2, "number_input", "Floor height (mm)", value=3600, step=1, key="wall_fl") / 1000.0
+    wab = W(c3, "selectbox", "Above the wall", options=["Beam", "Slab", "Opening"], key="wall_above")
+    wdp = W(c4, "number_input", "Depth (mm)", value=450, step=1, key="wall_dp") / 1000.0
+    wall = WallLoad(wt, wfl, wdp, wab)
+    st.caption(f"Wall height = floor height − {wab.lower()} depth = {wfl*1000:.0f} − {wdp*1000:.0f} = "
+               f"**{wall.height_m*1000:.0f} mm**")
     st.caption(f"Factored wall dead load = {wall.factored_dead_kNm(dc):.3f} kN/m (applied where marked present)")
 else:
     wall = WallLoad(0, 0)
@@ -272,7 +283,7 @@ labels = [chr(65 + i) for i in range(int(n_spans) + 1)]
 # ---------------- Step 7 & 8: per-span distribution + point loads ----------------
 st.header("5. Load distribution, self-weight and point loads per span")
 for i in range(int(n_spans)):
-    with st.expander(f"Span {i+1}  ({labels[i]} -> {labels[i+1]}, {lengths[i]} m)", expanded=(i == 0)):
+    with st.expander(f"Span {i+1}  ({labels[i]} -> {labels[i+1]}, {lengths[i]*1000:.0f} mm)", expanded=(i == 0)):
         st.subheader("Panel contributions")
         n_c = W(st, "number_input", "Number of panel contributions", min_value=0, value=2, step=1, key=f"nc{i}")
         contributions = []
@@ -304,16 +315,16 @@ for i in range(int(n_spans)):
             label = W(c1, "text_input", "Label", value=f"P{j+1}", key=f"s{i}p{j}lbl")
             d = W(c2, "number_input", "Ngₖ (kN)", value=0.0, step=0.5, key=f"s{i}p{j}d")
             l = W(c3, "number_input", "Nqₖ (kN)", value=0.0, step=0.5, key=f"s{i}p{j}l")
-            x = W(c4, "number_input", "Position (m)", value=0.0, step=0.1, key=f"s{i}p{j}x")
+            x = W(c4, "number_input", "Position (mm)", value=0, step=1, key=f"s{i}p{j}x") / 1000.0
             eb = eh = el = 0.0
             if W(st, "checkbox", f"Add self-weight of the element (beam / column) to {label}", key=f"s{i}p{j}sw"):
                 e1, e2, e3 = st.columns(3)
-                eb = W(e1, "number_input", "Width b (mm)", value=200.0, step=25.0, key=f"s{i}p{j}eb") / 1000.0
-                eh = W(e2, "number_input", "Depth h (mm)", value=450.0, step=25.0, key=f"s{i}p{j}eh") / 1000.0
-                el = W(e3, "number_input", "Length (m)", value=3.0, step=0.1, key=f"s{i}p{j}el")
+                eb = W(e1, "number_input", "Width b (mm)", value=200, step=1, key=f"s{i}p{j}eb") / 1000.0
+                eh = W(e2, "number_input", "Depth h (mm)", value=450, step=1, key=f"s{i}p{j}eh") / 1000.0
+                el = W(e3, "number_input", "Length (mm)", value=3000, step=1, key=f"s{i}p{j}el") / 1000.0
             pl = PointLoad(label, d, l, x, eb, eh, el, dc.concrete_density, dc.factor_selfweight_partition)
             if pl.self_weight_kN:
-                st.caption(f"Self-weight = {dc.factor_selfweight_partition:g} × {eb:g} × {eh:g} × {el:g} × "
+                st.caption(f"Self-weight = {dc.factor_selfweight_partition:g} × {eb:.3f} × {eh:.3f} × {el:.3f} × "
                            f"{dc.concrete_density:g} = {pl.self_weight_kN:.2f} kN   →   "
                            f"total Ngₖ = {d:g} + {pl.self_weight_kN:.2f} = **{pl.total_dead_kN:.2f} kN**")
             point_loads.append(pl)
@@ -381,7 +392,7 @@ if st.button("Generate PDF report"):
 st.subheader("Save this project")
 st.caption("Download a link file: opening it later reopens this app with all your inputs filled in, ready to edit.")
 _values = _collect_values()
-_base = st.text_input("App web address", value=_detect_base_url(), key="app_base_url",
+_base = st.text_input("Your app's web address (used inside the link)", value=_detect_base_url(), key="app_base_url",
                       placeholder="https://your-app.streamlit.app")
 if _base.strip():
     _url = f"{_base.strip().rstrip('/')}/?p={encode_project_state(_values)}"
